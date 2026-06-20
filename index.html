@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
+  <!-- Keep this internal QA page out of search engines AND AI training/crawlers. robots.txt blocks
+       the crawlers that honour it; these meta tags cover engines that read them. -->
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noai, noimageai" />
+  <meta name="googlebot" content="noindex, nofollow" />
   <title>PurePOS — Confidence</title>
   <style>
     /* Sub-project B — the Confidence Dashboard. Self-contained: fetches ./confidence-history.json
@@ -136,7 +140,7 @@
       const ageMin = when ? Math.round((Date.now() - when.getTime()) / 60000) : null;
       updated.textContent = when ? (ageMin < 1 ? 'just now' : ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`) : '';
       updated.className = ageMin != null && ageMin > 26 * 60 ? 'dot stale' : 'dot';
-      foot.innerHTML = `demo @ <code>${(latest.demoSha || '—')}</code>${ageMin != null && ageMin > 26 * 60 ? ' · <span class="stale">stale — last cycle &gt;26h ago</span>' : ''}`;
+      foot.innerHTML = ageMin != null && ageMin > 26 * 60 ? '<span class="stale">stale — last cycle &gt;26h ago</span>' : 'live — refreshed each QA cycle';
     }
 
     async function load() {
