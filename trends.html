@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <!-- Keep this internal QA page out of search engines AND AI training/crawlers. robots.txt blocks
+       the crawlers that honour it; these meta tags cover engines that read them. -->
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noai, noimageai" />
+  <meta name="googlebot" content="noindex, nofollow" />
+  <title>PurePOS — Confidence</title>
+  <style>
+    /* Sub-project B — the Confidence Dashboard. Self-contained: fetches ./confidence-history.json
+       ({points:[{at,demoSha,overall,areas:{...}}]}) and renders a hero + over-time chart + area
+       cards with sparklines. Mobile-first, warm-but-credible, high-contrast for glare. */
+    :root {
+      --bg: #0f1115; --panel: #171a21; --panel-2: #1d212a; --line: #2a2f3a;
+      --ink: #e7ebf0; --ink-dim: #9aa3b2; --accent: #ff7a45;
+      --good: #34c759; --warn: #f5a524; --bad: #ff453a;
+      --r: 16px; --shadow: 0 1px 0 rgba(255,255,255,.03), 0 12px 30px rgba(0,0,0,.35);
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --bg:#f5f6f8; --panel:#fff; --panel-2:#fafbfc; --line:#e6e9ee; --ink:#1b2430; --ink-dim:#5b6675; }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: max(16px, env(safe-area-inset-top)) 16px 48px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 2px 18px; }
+    header h1 { font-size: 15px; font-weight: 650; letter-spacing: .2px; margin: 0; }
+    header .dot { color: var(--ink-dim); font-weight: 500; font-size: 13px; }
+    .hero { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+      box-shadow: var(--shadow); padding: 22px 20px; margin-bottom: 14px; }
+    .hero .label { color: var(--ink-dim); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+    .hero .score { display: flex; align-items: flex-end; gap: 10px; margin-top: 6px; }
+    .hero .num { font-size: 64px; line-height: .95; font-weight: 800; letter-spacing: -2px; font-variant-numeric: tabular-nums; }
+    .hero .pct { font-size: 22px; font-weight: 700; color: var(--ink-dim); padding-bottom: 8px; }
+    .hero .verdict { margin-top: 8px; font-size: 14px; font-weight: 600; }
+    .chart { margin-top: 16px; }
+    .chart svg { width: 100%; height: 96px; display: block; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 420px) { .grid { grid-template-columns: 1fr; } }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 14px 12px; box-shadow: var(--shadow); }
+    .card .name { font-size: 13px; color: var(--ink-dim); font-weight: 600; text-transform: capitalize; }
+    .card .row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 2px; }
+    .card .v { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+    .card svg { width: 100%; height: 30px; margin-top: 6px; display: block; }
+    .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+    .foot { margin-top: 20px; color: var(--ink-dim); font-size: 12px; text-align: center; }
+    .stale { color: var(--bad); }
+    .empty { text-align: center; color: var(--ink-dim); padding: 60px 20px; }
+    .bar { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin-top: 10px; }
+    .bar > i { display: block; height: 100%; border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>PurePOS · Confidence</h1>
+      <span class="dot" id="updated">…</span>
+    </header>
+    <div id="root"><div class="empty">Loading confidence…</div></div>
+    <div class="foot" id="foot"></div>
+  </div>
+  <script>
+    const HISTORY_URL = './confidence-history.json';
+    const REFRESH_MS = 60000;
+    const band = (n) => n == null ? 'na' : n >= 85 ? 'good' : n >= 65 ? 'warn' : 'bad';
+    const color = (b) => ({ good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--bad)', na: 'var(--ink-dim)' }[b]);
+    const verdictText = (n) => n == null ? 'No data yet' : n >= 85 ? 'Healthy' : n >= 65 ? 'Watch' : 'Needs attention';
+
+    function spark(values, w = 240, h = 30, stroke = 'var(--ink-dim)') {
+      const xs = values.filter((v) => typeof v === 'number');
+      if (xs.length < 2) return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"></svg>`;
+      const min = Math.min(...xs, 0), max = Math.max(...xs, 100);
+      const n = values.length;
+      const pts = values.map((v, i) => {
+        const x = (i / (n - 1)) * w;
+        const y = v == null ? null : h - 2 - ((v - min) / (max - min || 1)) * (h - 4);
+        return y == null ? null : `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).filter(Boolean).join(' ');
+      return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts}"/></svg>`;
+    }
+
+    function bigChart(points) {
+      const w = 700, h = 96, vals = points.map((p) => p.overall);
+      const xs = vals.filter((v) => typeof v === 'number');
+      if (xs.length < 2) return '';
+      const min = Math.min(...xs) - 4, max = Math.max(...xs) + 4, n = points.length;
+      const coords = points.map((p, i) => {
+        const x = (i / (n - 1)) * w;
+        const y = p.overall == null ? null : h - 6 - ((p.overall - min) / (max - min || 1)) * (h - 12);
+        return y == null ? null : [x, y];
+      }).filter(Boolean);
+      const line = coords.map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)} ${c[1].toFixed(1)}`).join(' ');
+      const area = `${line} L${coords[coords.length - 1][0].toFixed(1)} ${h} L${coords[0][0].toFixed(1)} ${h} Z`;
+      const last = points[points.length - 1].overall, b = band(last);
+      return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stop-color="${color(b)}" stop-opacity=".28"/><stop offset="1" stop-color="${color(b)}" stop-opacity="0"/>
+        </linearGradient></defs>
+        <path d="${area}" fill="url(#g)"/><path d="${line}" fill="none" stroke="${color(b)}" stroke-width="2.5" stroke-linejoin="round"/>
+      </svg></div>`;
+    }
+
+    function render(history) {
+      const points = Array.isArray(history?.points) ? history.points : [];
+      const root = document.getElementById('root');
+      const foot = document.getElementById('foot');
+      const updated = document.getElementById('updated');
+      if (!points.length) { root.innerHTML = '<div class="empty">No confidence data yet — the QA spine writes a point each cycle.</div>'; return; }
+      const latest = points[points.length - 1];
+      const overall = latest.overall;
+      const b = band(overall);
+      const areas = latest.areas || {};
+      const names = Object.keys(areas).sort();
+      // per-area history for sparklines
+      const cards = names.map((name) => {
+        const v = areas[name];
+        const series = points.map((p) => (p.areas || {})[name]);
+        const bb = band(v);
+        return `<div class="card">
+          <div class="name">${name.replace(/[-_]/g, ' ')}</div>
+          <div class="row"><span class="v" style="color:${color(bb)}">${v == null ? '—' : v}</span>
+            <span class="pill" style="color:${color(bb)};background:color-mix(in srgb, ${color(bb)} 14%, transparent)">${verdictText(v)}</span></div>
+          ${spark(series, 240, 30, color(bb))}
+        </div>`;
+      }).join('');
+      root.innerHTML = `
+        <div class="hero">
+          <div class="label">Overall confidence</div>
+          <div class="score"><span class="num" style="color:${color(b)}">${overall == null ? '—' : overall}</span><span class="pct">%</span></div>
+          <div class="verdict" style="color:${color(b)}">${verdictText(overall)} · ${points.length} cycle${points.length > 1 ? 's' : ''} tracked</div>
+          <div class="bar"><i style="width:${overall == null ? 0 : overall}%;background:${color(b)}"></i></div>
+          ${bigChart(points)}
+        </div>
+        <div class="grid">${cards}</div>`;
+      const when = latest.at ? new Date(latest.at) : null;
+      const ageMin = when ? Math.round((Date.now() - when.getTime()) / 60000) : null;
+      updated.textContent = when ? (ageMin < 1 ? 'just now' : ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`) : '';
+      updated.className = ageMin != null && ageMin > 26 * 60 ? 'dot stale' : 'dot';
+      foot.innerHTML = ageMin != null && ageMin > 26 * 60 ? '<span class="stale">stale — last cycle &gt;26h ago</span>' : 'live — refreshed each QA cycle';
+    }
+
+    async function load() {
+      try {
+        const res = await fetch(`${HISTORY_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(res.status);
+        render(await res.json());
+      } catch (e) {
+        // Cloudflare Access re-auth or a missing file — don't wipe a previously-rendered view.
+        if (document.querySelector('.hero')) return;
+        document.getElementById('root').innerHTML = `<div class="empty">Couldn't load confidence data (${e.message}).<br>If this persists, re-authenticate.</div>`;
+      }
+    }
+    load();
+    setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  </script>
+</body>
+</html>
